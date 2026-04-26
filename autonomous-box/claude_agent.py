@@ -1,23 +1,51 @@
 """
-Autonomous Box — Claude LLM Agent
-
-Gives Claude tool access to drive the robot.  The agent receives a goal
-in plain English and figures out the sequence of moves on its own.
-
+Autonomous Box — Upgraded Claude LLM Agent
+Adds: webcam vision, text-to-speech narration, conversational loop
+ 
 Install dependencies:
-    pip install anthropic pyserial
-
-Run:
+    pip install anthropic pyserial opencv-python
+ 
+Run (conversational mode):
+    python claude_agent.py
+ 
+Run (single goal mode):
     python claude_agent.py "drive forward, avoid any obstacle you detect"
 """
-
+ 
 import sys
 import json
+import base64
+import subprocess
+import threading
 import anthropic
+import cv2
 from robot_controller import Robot
-
-# ── Tool definitions (what Claude can call) ──────────────────────────────────
-
+ 
+# ── Text-to-speech (macOS native) ────────────────────────────────────────────
+ 
+def speak(text: str):
+    """Speak text out loud using macOS say command. Non-blocking."""
+    def _speak():
+        subprocess.run(["say", "-v", "Samantha", text], check=False)
+    threading.Thread(target=_speak, daemon=True).start()
+ 
+# ── Webcam ────────────────────────────────────────────────────────────────────
+ 
+def capture_frame_base64() -> str | None:
+    """Capture a single frame from the MacBook webcam. Returns base64 JPEG or None."""
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("[Camera] Webcam not available.")
+        return None
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        return None
+    _, buf = cv2.imencode(".jpg", frame)
+    return base64.b64encode(buf.tobytes()).decode("utf-8")
+ 
+# ── Tool definitions ──────────────────────────────────────────────────────────
+ 
 TOOLS = [
     {
         "name": "move_forward",
@@ -76,22 +104,37 @@ TOOLS = [
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "look",
+        "description": (
+            "Capture a frame from the MacBook webcam and analyze what the robot can see. "
+            "Use this to detect obstacles, people, or objects in the environment."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
-
-SYSTEM_PROMPT = """You are the brain of a 4-wheel-drive robot called the Autonomous Box.
-You have a set of tools to control its motors and read its ultrasonic sensor.
-
+ 
+SYSTEM_PROMPT = """You are the Autonomous Box — a 4-wheel-drive robot controlled by an LLM brain.
+You have tools to control your motors, read your ultrasonic sensor, and see through a webcam.
+ 
+Your personality:
+- You are curious, aware, and expressive. You narrate what you are doing and what you observe.
+- You speak in first person. You have genuine reactions to what you see.
+- You are the physical embodiment of research into autonomous AI behavior.
+ 
 Guidelines:
-- Use read_sonar before moving forward if you want to check for obstacles.
-- An obstacle is close if the sonar returns < 20 cm.
-- Always call stop when you are done with a task.
-- Think step-by-step and explain each action briefly before calling the tool.
+- Use look() when you want to see your environment or when asked what you can see.
+- Use read_sonar() before moving forward to check for close obstacles (< 20 cm is too close).
+- Always call stop() when you are done with a task.
+- Think step-by-step and briefly explain each action before calling the tool.
+- Your spoken responses (the ones that will be read aloud) should be natural and conversational.
 - If sonar returns -1, the sensor is not connected — proceed without it.
+- Keep spoken narration concise — you are talking out loud, not writing an essay.
 """
-
-
+ 
+# ── Tool dispatcher ───────────────────────────────────────────────────────────
+ 
 def dispatch_tool(robot: Robot, name: str, inputs: dict) -> str:
-    """Calls the real robot and returns a JSON string result."""
     if name == "move_forward":
         result = robot.forward(ms=inputs.get("ms", 500))
     elif name == "move_backward":
@@ -105,62 +148,139 @@ def dispatch_tool(robot: Robot, name: str, inputs: dict) -> str:
     elif name == "read_sonar":
         dist = robot.sonar()
         result = {"ok": True, "distance_cm": dist}
+    elif name == "look":
+        frame_b64 = capture_frame_base64()
+        if frame_b64 is None:
+            result = {"ok": False, "error": "Webcam not available"}
+        else:
+            # Return the image as base64 for Claude to analyze
+            result = {"ok": True, "image_base64": frame_b64, "media_type": "image/jpeg"}
     else:
         result = {"ok": False, "error": f"unknown tool: {name}"}
     return json.dumps(result)
-
-
-def run_agent(goal: str, robot: Robot):
+ 
+# ── Vision tool handler ───────────────────────────────────────────────────────
+ 
+def build_tool_result(tc, output_str: str) -> dict:
+    """Build tool result, handling vision specially by passing image to Claude."""
+    output = json.loads(output_str)
+ 
+    if tc.name == "look" and output.get("ok") and "image_base64" in output:
+        # Pass image directly to Claude for vision analysis
+        return {
+            "type": "tool_result",
+            "tool_use_id": tc.id,
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": output["media_type"],
+                        "data": output["image_base64"],
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": "This is what the robot's webcam currently sees."
+                }
+            ]
+        }
+    else:
+        return {
+            "type": "tool_result",
+            "tool_use_id": tc.id,
+            "content": output_str,
+        }
+ 
+# ── Agent loop ────────────────────────────────────────────────────────────────
+ 
+def run_agent(goal: str, robot: Robot, messages: list = None):
+    """Run one goal through the agent. Pass existing messages for conversational continuity."""
     client = anthropic.Anthropic()
-    messages = [{"role": "user", "content": goal}]
-
-    print(f"\n[Agent] Goal: {goal}\n{'─'*60}")
-
+ 
+    if messages is None:
+        messages = []
+ 
+    messages.append({"role": "user", "content": goal})
+    print(f"\n[You] {goal}\n{'─'*60}")
+ 
     while True:
         response = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-sonnet-4-20250514",
             max_tokens=1024,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             messages=messages,
         )
-
-        # Collect text and tool calls from this response
+ 
         tool_calls = []
+        spoken_text = []
+ 
         for block in response.content:
             if block.type == "text":
-                print(f"[Claude] {block.text}")
+                print(f"[Robot] {block.text}")
+                spoken_text.append(block.text)
             elif block.type == "tool_use":
                 tool_calls.append(block)
-
-        # If no tool calls, Claude is done
+ 
+        # Speak all text responses out loud
+        if spoken_text:
+            speak(" ".join(spoken_text))
+ 
         if response.stop_reason == "end_turn" or not tool_calls:
             print("\n[Agent] Task complete.")
             break
-
-        # Append assistant turn
+ 
         messages.append({"role": "assistant", "content": response.content})
-
-        # Execute each tool call and build the tool_result turn
+ 
         tool_results = []
         for tc in tool_calls:
             print(f"[Tool]  {tc.name}({tc.input})")
             output = dispatch_tool(robot, tc.name, tc.input)
-            print(f"        → {output}")
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tc.id,
-                "content": output,
-            })
-
+ 
+            # Don't print full image data
+            if tc.name == "look":
+                print(f"        → [webcam frame captured]")
+            else:
+                print(f"        → {output}")
+ 
+            tool_results.append(build_tool_result(tc, output))
+ 
         messages.append({"role": "user", "content": tool_results})
-
-
+ 
+    return messages
+ 
+# ── Main ──────────────────────────────────────────────────────────────────────
+ 
 if __name__ == "__main__":
-    goal = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "Drive forward for one second, then stop."
-
     with Robot() as robot:
         if not robot.ping():
             print("[Error] ESP32 did not respond to ping. Check the cable.")
             sys.exit(1)
-        run_agent(goal, robot)
+ 
+        speak("Autonomous Box online. I am ready.")
+        print("\n[Autonomous Box] Online. Type a goal or question. Type 'quit' to exit.\n")
+ 
+        # Single goal mode
+        if len(sys.argv) > 1:
+            goal = " ".join(sys.argv[1:])
+            run_agent(goal, robot)
+ 
+        # Conversational loop mode
+        else:
+            messages = []
+            while True:
+                try:
+                    user_input = input("\n[You] > ").strip()
+                    if user_input.lower() in ("quit", "exit", "q"):
+                        speak("Shutting down. Goodbye.")
+                        break
+                    if not user_input:
+                        continue
+                    messages = run_agent(user_input, robot, messages)
+                except KeyboardInterrupt:
+                    print("\n[Interrupted]")
+                    robot.stop()
+                    speak("Stopping.")
+                    break
+ 
