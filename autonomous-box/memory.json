@@ -1,0 +1,9 @@
+{
+  "wiring": "turn_right=forward, turn_left=backward, move_forward=spins, move_backward=spins",
+  "user_name": "Dominic",
+  "room_notes": "Has lizard decorations for Halloween",
+  "personality_notes": "",
+  "last_session": "Session 6 on April 27 \u2014 ended manually",
+  "session_count": 6,
+  "personal_notes": "Dominic mentioned coming over tomorrow or the day after"
+}
