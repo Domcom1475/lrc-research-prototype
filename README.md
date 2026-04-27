@@ -4,6 +4,7 @@
 
 A physical AI-controlled robot and personal automation system built entirely through AI-assisted development, emerging from original independent research into a novel AI alignment failure mode. No formal CS or ML background — every line of code written collaboratively with AI tools.
 
+https://www.loom.com/share/6ccabf0f94a3450581edbf441da17455 
 ---
 
 ## Problem Statement
