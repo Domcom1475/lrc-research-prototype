@@ -179,7 +179,9 @@ python claude_agent.py
 
 ---
 
-## Demo
+## Demo 
+
+Video --> https://www.youtube.com/watch?v=OWZRGhqJ3cY 
 
 **Autonomous Box — session highlights:**
 
