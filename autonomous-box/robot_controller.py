@@ -36,8 +36,8 @@ def _find_esp32_port() -> str:
 
 
 class Robot:
-    def __init__(self, port: str = None, baud: int = 115200, timeout: float = 3.0):
-        port = port or _find_esp32_port()
+    def __init__(self, port: str = None, baud: int = 115200, timeout: float = 15.0):
+        port = port or "/dev/cu.usbserial-10"
         self._ser = serial.Serial(port, baud, timeout=timeout)
         time.sleep(1.5)          # let ESP32 boot / send its ready message
         self._ser.reset_input_buffer()
@@ -58,21 +58,21 @@ class Robot:
 
     # ── Motion commands ──────────────────────────────────────────────────────
 
-    def forward(self, ms: int = 0) -> dict:
+    def forward(self, ms: int = 0, speed: int = 60) -> dict:
         """Move forward. ms=0 means keep going until stop() is called."""
-        return self._send({"action": "forward", "ms": ms})
+        return self._send({"action": "forward", "ms": ms, "speed": speed})
 
-    def backward(self, ms: int = 0) -> dict:
+    def backward(self, ms: int = 0, speed: int = 60) -> dict:
         """Move backward."""
-        return self._send({"action": "backward", "ms": ms})
+        return self._send({"action": "backward", "ms": ms, "speed": speed})
 
-    def turn_left(self, ms: int = 0) -> dict:
+    def turn_left(self, ms: int = 0, speed: int = 60) -> dict:
         """Spin left in place."""
-        return self._send({"action": "left", "ms": ms})
+        return self._send({"action": "left", "ms": ms, "speed": speed})
 
-    def turn_right(self, ms: int = 0) -> dict:
+    def turn_right(self, ms: int = 0, speed: int = 60) -> dict:
         """Spin right in place."""
-        return self._send({"action": "right", "ms": ms})
+        return self._send({"action": "right", "ms": ms, "speed": speed})
 
     def stop(self) -> dict:
         """Stop all motors immediately."""
